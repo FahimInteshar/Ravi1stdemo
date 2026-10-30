@@ -1,0 +1,581 @@
+#35+ Expressiosns
+
+#include <Arduino.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+#include <math.h>
+
+// ======================================
+// AVEYK D1 — Emotional Face Engine V2
+// 35 Expressions | ESP32 | ST7735 TFT
+// ======================================
+
+// Confirmed GPIO mapping
+#define TFT_CS    27
+#define TFT_RST   14
+#define TFT_DC    26
+#define TFT_MOSI  25
+#define TFT_SCLK  33
+#define TFT_BL    32
+
+Adafruit_ST7735 tft(
+  TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST
+);
+
+const uint16_t BG = ST77XX_BLACK;
+const uint16_t EYE = ST77XX_CYAN;
+
+const int SW = 160;
+const int SH = 128;
+
+const int LX = 46;
+const int RIGHT_EYE_X = 114;
+const int EY = 62;
+
+const uint8_t TOTAL_FACES = 35;
+
+uint8_t face = 1;
+bool demoMode = true;
+bool blinking = false;
+
+unsigned long lastFaceChange = 0;
+unsigned long lastBlink = 0;
+unsigned long blinkStarted = 0;
+unsigned long nextBlink = 3500;
+unsigned long lastFrame = 0;
+
+int lookX = 0;
+int lookY = 0;
+uint32_t frameNumber = 0;
+
+// ======================================
+// Drawing helpers
+// ======================================
+
+void oval(int x, int y, int RIGHT_EYE_X, int ry,
+          uint16_t color = EYE) {
+  for (int yy = -ry; yy <= ry; yy++) {
+    float ratio = 1.0f -
+      (float)(yy * yy) / (ry * ry);
+
+    int dx = (int)(RIGHT_EYE_X * sqrtf(max(0.0f, ratio)));
+
+    tft.drawFastHLine(
+      x - dx, y + yy, dx * 2 + 1, color
+    );
+  }
+}
+
+void eye(int x, int y, int w = 26, int h = 38) {
+  tft.fillRoundRect(
+    x - w / 2, y - h / 2,
+    w, h, min(w, h) / 3, EYE
+  );
+}
+
+void lineEye(int x, int y, int w = 27) {
+  tft.fillRoundRect(
+    x - w / 2, y - 2, w, 5, 2, EYE
+  );
+}
+
+void dotEye(int x, int y, int r = 6) {
+  tft.fillCircle(x, y, r, EYE);
+}
+
+void arcEye(int x, int y, bool up = true) {
+  for (int dx = -15; dx <= 15; dx++) {
+    int curve = (225 - dx * dx) / 17;
+    int yy = up ? y - curve : y + curve;
+    tft.fillCircle(x + dx, yy, 2, EYE);
+  }
+}
+
+void diagonal(int x1, int y1, int x2, int y2,
+              int thickness = 4) {
+  for (int i = -thickness / 2;
+       i <= thickness / 2; i++) {
+    tft.drawLine(x1, y1 + i, x2, y2 + i, EYE);
+  }
+}
+
+void heart(int x, int y) {
+  tft.fillCircle(x - 7, y - 6, 8, EYE);
+  tft.fillCircle(x + 7, y - 6, 8, EYE);
+  tft.fillTriangle(
+    x - 15, y - 4,
+    x + 15, y - 4,
+    x, y + 17, EYE
+  );
+}
+
+void tear(int x, int y) {
+  tft.fillCircle(x, y + 5, 4, EYE);
+  tft.fillTriangle(
+    x, y - 5,
+    x - 4, y + 5,
+    x + 4, y + 5, EYE
+  );
+}
+
+void eyebrow(int x, int y, bool inward) {
+  if (inward) {
+    diagonal(x - 15, y - 8, x + 15, y + 3, 4);
+  } else {
+    diagonal(x - 15, y + 3, x + 15, y - 8, 4);
+  }
+}
+
+void sparkle(int x, int y) {
+  tft.drawFastHLine(x - 5, y, 11, EYE);
+  tft.drawFastVLine(x, y - 5, 11, EYE);
+}
+
+void spiral(int cx, int cy) {
+  float previousX = cx;
+  float previousY = cy;
+
+  for (float a = 0.0f; a <= 13.0f; a += 0.12f) {
+    float r = a * 1.15f;
+
+    float nx = cx + cosf(a) * r;
+    float ny = cy + sinf(a) * r;
+
+    tft.drawLine(
+      (int)previousX, (int)previousY,
+      (int)nx, (int)ny, EYE
+    );
+
+    previousX = nx;
+    previousY = ny;
+  }
+}
+
+void drawBlink() {
+  lineEye(LX + lookX, EY + lookY);
+  lineEye(RIGHT_EYE_X + lookX, EY + lookY);
+}
+
+// ======================================
+// 35 Expression Renderer
+// ======================================
+
+void drawExpression(uint8_t id) {
+  tft.fillScreen(BG);
+
+  int l = LX + lookX;
+  int r = RIGHT_EYE_X + lookX;
+  int y = EY + lookY;
+
+  // Natural blink on selected expressions
+  if (blinking &&
+      id != 4 && id != 21 &&
+      id != 25 && id != 28) {
+    drawBlink();
+    return;
+  }
+
+  switch (id) {
+
+    case 1: // Neutral / Idle
+      eye(l, y);
+      eye(r, y);
+      break;
+
+    case 2: // Happy
+      arcEye(l, y + 4);
+      arcEye(r, y + 4);
+      break;
+
+    case 3: // Angry
+      eye(l, y + 6, 26, 20);
+      eye(r, y + 6, 26, 20);
+      eyebrow(l, y - 20, true);
+      eyebrow(r, y - 20, false);
+      break;
+
+    case 4: // Sleepy
+      lineEye(l, y);
+      lineEye(r, y);
+      break;
+
+    case 5: // Curious
+      eye(l - 3, y, 27, 43);
+      eye(r + 4, y + 4, 17, 25);
+      dotEye(r + 4, y + 4, 3);
+      break;
+
+    case 6: // Excited
+      arcEye(l, y);
+      arcEye(r, y);
+      sparkle(15, 40);
+      sparkle(145, 40);
+      break;
+
+    case 7: // Blushing
+      arcEye(l, y);
+      arcEye(r, y);
+      diagonal(16, 84, 23, 90, 2);
+      diagonal(25, 84, 32, 90, 2);
+      diagonal(128, 90, 135, 84, 2);
+      diagonal(138, 90, 145, 84, 2);
+      break;
+
+    case 8: // Surprised
+      oval(l, y, 16, 25);
+      oval(r, y, 16, 25);
+      break;
+
+    case 9: // Confused
+      eye(l, y, 28, 43);
+      eye(r, y + 5, 17, 20);
+      break;
+
+    case 10: // Thinking
+      eye(l, y, 25, 36);
+      eye(r, y, 25, 36);
+      tft.fillCircle(l + 6, y - 10, 6, BG);
+      tft.fillCircle(r + 6, y - 10, 6, BG);
+      break;
+
+    case 11: // Suspicious
+      eye(l, y + 7, 27, 17);
+      eye(r, y + 7, 27, 17);
+      diagonal(l - 14, y - 8, l + 14, y, 3);
+      diagonal(r - 14, y, r + 14, y - 8, 3);
+      break;
+
+    case 12: // Wink Left
+      lineEye(l, y);
+      eye(r, y);
+      break;
+
+    case 13: // Wink Right
+      eye(l, y);
+      lineEye(r, y);
+      break;
+
+    case 14: // Heart Eyes
+      heart(l, y);
+      heart(r, y);
+      break;
+
+    case 15: // Laughing
+      arcEye(l, y, false);
+      arcEye(r, y, false);
+      diagonal(l - 14, y - 18, l + 14, y - 8, 3);
+      diagonal(r - 14, y - 8, r + 14, y - 18, 3);
+      break;
+
+    case 16: // Sad
+      arcEye(l, y - 4, false);
+      arcEye(r, y - 4, false);
+      break;
+
+    case 17: // Crying
+      arcEye(l, y - 5, false);
+      arcEye(r, y - 5, false);
+      tear(l + 12, y + 20);
+      tear(r + 12, y + 20);
+      break;
+
+    case 18: // Nervous
+      eye(l, y, 23, 36);
+      eye(r, y, 23, 36);
+      tear(19, 70);
+      tear(141, 70);
+      break;
+
+    case 19: // Determined
+      eye(l, y + 5, 26, 22);
+      eye(r, y + 5, 26, 22);
+      eyebrow(l, y - 19, true);
+      eyebrow(r, y - 19, false);
+      sparkle(80, 106);
+      break;
+
+    case 20: // Cool
+      tft.fillRoundRect(l - 19, y - 12, 38, 24, 6, EYE);
+      tft.fillRoundRect(r - 19, y - 12, 38, 24, 6, EYE);
+      tft.fillRect(65, y - 7, 30, 5, EYE);
+      break;
+
+    case 21: // Bored
+      tft.fillRoundRect(l - 15, y, 30, 12, 5, EYE);
+      tft.fillRoundRect(r - 15, y, 30, 12, 5, EYE);
+      break;
+
+    case 22: // Shocked
+      oval(l, y, 13, 24);
+      oval(r, y, 13, 24);
+      sparkle(15, 28);
+      sparkle(145, 28);
+      break;
+
+    case 23: // Playful
+      diagonal(l - 13, y - 15, l + 9, y, 5);
+      diagonal(l + 9, y, l - 13, y + 15, 5);
+      eye(r, y);
+      break;
+
+    case 24: // Happy Blink
+      arcEye(l, y);
+      arcEye(r, y);
+      sparkle(20, 42);
+      sparkle(140, 42);
+      break;
+
+    case 25: // Sleepy Blink
+      lineEye(l, y + 3);
+      lineEye(r, y + 3);
+      sparkle(20, 55);
+      break;
+
+    case 26: // Dot Eyes
+      dotEye(l, y, 7);
+      dotEye(r, y, 7);
+      break;
+
+    case 27: // Spiral Eyes
+      spiral(l, y);
+      spiral(r, y);
+      break;
+
+    case 28: // Angry Blink
+      diagonal(l - 12, y - 5, l + 12, y + 5, 5);
+      diagonal(r - 12, y + 5, r + 12, y - 5, 5);
+      break;
+
+    case 29: // In Love
+      heart(l, y);
+      heart(r, y);
+      sparkle(15, 85);
+      sparkle(145, 85);
+      break;
+
+    case 30: // Alert
+      eye(l, y);
+      eye(r, y);
+      tft.fillRect(13, 30, 5, 26, EYE);
+      tft.fillCircle(15, 64, 3, EYE);
+      tft.fillRect(142, 30, 5, 26, EYE);
+      tft.fillCircle(144, 64, 3, EYE);
+      break;
+
+    case 31: // Loading
+    {
+      int angle = (frameNumber * 15) % 360;
+      float rad = angle * 0.0174533f;
+
+      for (int i = 0; i < 8; i++) {
+        float a = rad + i * 0.785398f;
+        int x = 80 + cosf(a) * 21;
+        int yy = 62 + sinf(a) * 21;
+        dotEye(x, yy, (i % 3) + 2);
+      }
+      break;
+    }
+
+    case 32: // Searching
+    {
+      int shift = (int)(frameNumber % 17) - 8;
+      eye(l + shift, y);
+      eye(r + shift, y);
+      diagonal(12, 62, 20, 54, 3);
+      diagonal(140, 54, 148, 62, 3);
+      break;
+    }
+
+    case 33: // Greetings
+      arcEye(l, y);
+      arcEye(r, y);
+      sparkle(15, 30);
+      sparkle(145, 30);
+      break;
+
+    case 34: // Goodbye
+      arcEye(l, y + 6);
+      arcEye(r, y + 6);
+      tear(145, 80);
+      break;
+
+    case 35: // Custom Pixel Eyes
+      for (int xx = -12; xx <= 12; xx += 6) {
+        tft.fillRect(l + xx, y - 19, 4, 5, EYE);
+        tft.fillRect(l + xx, y + 14, 4, 5, EYE);
+        tft.fillRect(r + xx, y - 19, 4, 5, EYE);
+        tft.fillRect(r + xx, y + 14, 4, 5, EYE);
+      }
+      tft.fillRect(l - 12, y - 13, 5, 27, EYE);
+      tft.fillRect(l + 8, y - 13, 5, 27, EYE);
+      tft.fillRect(r - 12, y - 13, 5, 27, EYE);
+      tft.fillRect(r + 8, y - 13, 5, 27, EYE);
+      break;
+
+    default:
+      eye(l, y);
+      eye(r, y);
+      break;
+  }
+}
+
+// ======================================
+// Serial commands
+// ======================================
+
+void printHelp() {
+  Serial.println();
+  Serial.println("=== AVEYK D1 V2 ===");
+  Serial.println("Enter expression number: 1-35");
+  Serial.println("d = Automatic demo");
+  Serial.println("n = Next expression");
+  Serial.println("p = Previous expression");
+  Serial.println("h = Help");
+}
+
+void selectFace(int number) {
+  if (number < 1 || number > TOTAL_FACES) {
+    Serial.println("Invalid expression. Use 1-35.");
+    return;
+  }
+
+  face = (uint8_t)number;
+  demoMode = false;
+  blinking = false;
+  lookX = 0;
+  lookY = 0;
+  lastFaceChange = millis();
+
+  Serial.print("Expression: ");
+  Serial.println(face);
+
+  drawExpression(face);
+}
+
+String inputBuffer = "";
+
+void handleSerial() {
+  while (Serial.available()) {
+    char c = Serial.read();
+
+    if (c == '\r' || c == '\n') {
+      inputBuffer.trim();
+
+      if (inputBuffer.length() > 0) {
+        if (inputBuffer == "d") {
+          demoMode = true;
+          lastFaceChange = millis();
+          Serial.println("Demo mode ON");
+        }
+        else if (inputBuffer == "n") {
+          selectFace(face % TOTAL_FACES + 1);
+        }
+        else if (inputBuffer == "p") {
+          selectFace(
+            face == 1 ? TOTAL_FACES : face - 1
+          );
+        }
+        else if (inputBuffer == "h") {
+          printHelp();
+        }
+        else {
+          bool numeric = true;
+
+          for (unsigned int i = 0;
+               i < inputBuffer.length(); i++) {
+            if (!isDigit(inputBuffer[i])) {
+              numeric = false;
+              break;
+            }
+          }
+
+          if (numeric) {
+            selectFace(inputBuffer.toInt());
+          } else {
+            Serial.println("Unknown command");
+          }
+        }
+      }
+
+      inputBuffer = "";
+    }
+    else if (inputBuffer.length() < 12) {
+      inputBuffer += c;
+    }
+  }
+}
+
+// ======================================
+// Setup
+// ======================================
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(TFT_BL, OUTPUT);
+  digitalWrite(TFT_BL, HIGH);
+
+  // Same configuration as successful test
+  tft.initR(INITR_BLACKTAB);
+  tft.setRotation(1);
+  tft.fillScreen(BG);
+
+  randomSeed(micros());
+
+  lastFaceChange = millis();
+  lastBlink = millis();
+
+  printHelp();
+  drawExpression(face);
+}
+
+// ======================================
+// Main loop
+// ======================================
+
+void loop() {
+  unsigned long now = millis();
+
+  handleSerial();
+
+  // Automatic demo: change every 4 sec
+  if (demoMode && now - lastFaceChange >= 4000) {
+    face = face % TOTAL_FACES + 1;
+    lastFaceChange = now;
+    lookX = 0;
+    lookY = 0;
+
+    Serial.print("Demo expression: ");
+    Serial.println(face);
+  }
+
+  // Blink every 3–5 seconds
+  if (!blinking &&
+      now - lastBlink >= nextBlink) {
+    blinking = true;
+    blinkStarted = now;
+  }
+
+  if (blinking && now - blinkStarted >= 150) {
+    blinking = false;
+    lastBlink = now;
+    nextBlink = random(3000, 5500);
+  }
+
+  // Idle eyes gently look around
+  if (face == 1) {
+    lookX = (int)(8.0f * sinf(now / 850.0f));
+    lookY = (int)(3.0f * sinf(now / 1400.0f));
+  } else {
+    lookX = 0;
+    lookY = 0;
+  }
+
+  // Redraw approximately 10 times/sec
+  if (now - lastFrame >= 100) {
+    lastFrame = now;
+    frameNumber++;
+    drawExpression(face);
+  }
+}
