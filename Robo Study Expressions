@@ -1,0 +1,202 @@
+#include <Arduino.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+
+#define TFT_CS 27
+#define TFT_RST 14
+#define TFT_DC 26
+#define TFT_MOSI 25
+#define TFT_SCLK 33
+#define TFT_BL 32
+
+Adafruit_ST7735 tft(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
+
+constexpr bool DEMO_MODE = true;
+constexpr uint32_t FOCUS_DURATION = DEMO_MODE ? 30000UL : 1500000UL;
+constexpr uint32_t BREAK_DURATION = DEMO_MODE ? 10000UL : 300000UL;
+constexpr uint32_t CELEBRATE_DURATION = 4000UL;
+constexpr uint16_t CYAN_COLOR = 0x07FF;
+
+enum class Mode : uint8_t { IDLE, FOCUS, CELEBRATE, BREAK_TIME };
+Mode mode = Mode::IDLE;
+uint32_t modeElapsed = 0;
+uint32_t lastTick = 0;
+uint32_t lastDraw = 0;
+uint32_t sessionsCompleted = 0;
+bool paused = false;
+
+void setMode(Mode next) {
+  mode = next;
+  modeElapsed = 0;
+  paused = false;
+  Serial.print("Mode changed: ");
+  switch (mode) {
+    case Mode::IDLE: Serial.println("IDLE"); break;
+    case Mode::FOCUS: Serial.println("FOCUS"); break;
+    case Mode::CELEBRATE: Serial.println("CELEBRATE"); break;
+    case Mode::BREAK_TIME: Serial.println("BREAK"); break;
+  }
+}
+
+void drawOpenEyes() {
+  tft.fillRoundRect(32, 41, 28, 34, 12, CYAN_COLOR);
+  tft.fillRoundRect(100, 41, 28, 34, 12, CYAN_COLOR);
+}
+
+void drawFocusEyes() {
+  tft.fillRoundRect(29, 50, 34, 17, 7, CYAN_COLOR);
+  tft.fillRoundRect(97, 50, 34, 17, 7, CYAN_COLOR);
+  tft.drawLine(29, 43, 61, 48, CYAN_COLOR);
+  tft.drawLine(99, 48, 131, 43, CYAN_COLOR);
+}
+
+void drawTiredEyes() {
+  tft.fillRoundRect(29, 55, 34, 10, 5, CYAN_COLOR);
+  tft.fillRoundRect(97, 55, 34, 10, 5, CYAN_COLOR);
+  tft.drawLine(29, 49, 61, 53, CYAN_COLOR);
+  tft.drawLine(99, 53, 131, 49, CYAN_COLOR);
+}
+
+void drawHappyEyes() {
+  for (int dx = -15; dx < 15; dx += 1) {
+    const int next = dx + 1;
+    const int y1 = 68 - (225 - dx * dx) / 22;
+    const int y2 = 68 - (225 - next * next) / 22;
+    tft.drawLine(46 + dx, y1, 46 + next, y2, CYAN_COLOR);
+    tft.drawLine(114 + dx, y1, 114 + next, y2, CYAN_COLOR);
+    tft.drawLine(46 + dx, y1 + 1, 46 + next, y2 + 1, CYAN_COLOR);
+    tft.drawLine(114 + dx, y1 + 1, 114 + next, y2 + 1, CYAN_COLOR);
+  }
+}
+
+void drawClosedEyes() {
+  tft.drawFastHLine(31, 60, 30, CYAN_COLOR);
+  tft.drawFastHLine(99, 60, 30, CYAN_COLOR);
+}
+
+void drawClock(uint32_t seconds) {
+  const uint32_t mm = seconds / 60;
+  const uint32_t ss = seconds % 60;
+  tft.setTextColor(ST77XX_YELLOW);
+  tft.setCursor(8, 119);
+  if (mm < 10) tft.print('0');
+  tft.print(mm);
+  tft.print(':');
+  if (ss < 10) tft.print('0');
+  tft.print(ss);
+}
+
+void drawScreen() {
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setTextSize(1);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setCursor(8, 6);
+  tft.print("AVEYK D1");
+
+  const bool blinking = (millis() % 4000UL) < 150UL;
+  const char* caption = "READY TO STUDY";
+  uint32_t remaining = 0;
+
+  switch (mode) {
+    case Mode::IDLE:
+      caption = "READY TO STUDY";
+      if (blinking) drawClosedEyes(); else drawOpenEyes();
+      break;
+    case Mode::FOCUS:
+      remaining = (modeElapsed >= FOCUS_DURATION)
+        ? 0 : (FOCUS_DURATION - modeElapsed + 999UL) / 1000UL;
+      if (modeElapsed >= (FOCUS_DURATION / 5UL) * 4UL) {
+        caption = "ALMOST THERE";
+        if (blinking) drawClosedEyes(); else drawTiredEyes();
+      } else {
+        caption = "STAY FOCUSED";
+        if (blinking) drawClosedEyes(); else drawFocusEyes();
+      }
+      break;
+    case Mode::CELEBRATE:
+      caption = "GREAT WORK!";
+      drawHappyEyes();
+      break;
+    case Mode::BREAK_TIME:
+      caption = "TAKE A BREAK";
+      remaining = (modeElapsed >= BREAK_DURATION)
+        ? 0 : (BREAK_DURATION - modeElapsed + 999UL) / 1000UL;
+      drawClosedEyes();
+      break;
+  }
+
+  tft.setTextColor(CYAN_COLOR);
+  tft.setCursor(8, 103);
+  tft.print(caption);
+  if (mode == Mode::FOCUS || mode == Mode::BREAK_TIME) drawClock(remaining);
+  if (paused) {
+    tft.setTextColor(ST77XX_YELLOW);
+    tft.setCursor(100, 119);
+    tft.print("PAUSE");
+  }
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setCursor(8, 145);
+  tft.print("DONE: ");
+  tft.print(sessionsCompleted);
+}
+
+void handleCommand(char cmd) {
+  switch (cmd) {
+    case 's': case 'S': setMode(Mode::FOCUS); break;
+    case 'p': case 'P':
+      if (mode == Mode::FOCUS || mode == Mode::BREAK_TIME) {
+        paused = true;
+        Serial.println("Paused");
+      }
+      break;
+    case 'r': case 'R':
+      paused = false;
+      Serial.println("Resumed");
+      break;
+    case 'x': case 'X':
+      sessionsCompleted = 0;
+      setMode(Mode::IDLE);
+      break;
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(TFT_BL, OUTPUT);
+  digitalWrite(TFT_BL, HIGH);
+  tft.initR(INITR_BLACKTAB);
+  tft.setRotation(1);
+  setMode(Mode::IDLE);
+  lastTick = millis();
+  drawScreen();
+  Serial.println("Commands: s=start, p=pause, r=resume, x=reset");
+  Serial.println(DEMO_MODE ? "DEMO: 30s focus, 4s celebrate, 10s break" :
+                              "NORMAL: 25m focus, 4s celebrate, 5m break");
+}
+
+void loop() {
+  const uint32_t now = millis();
+  const uint32_t delta = now - lastTick;
+  lastTick = now;
+
+  while (Serial.available() > 0) {
+    handleCommand(static_cast<char>(Serial.read()));
+  }
+
+  if (!paused && mode != Mode::IDLE) {
+    modeElapsed += delta;
+    if (mode == Mode::FOCUS && modeElapsed >= FOCUS_DURATION) {
+      ++sessionsCompleted;
+      setMode(Mode::CELEBRATE);
+    } else if (mode == Mode::CELEBRATE && modeElapsed >= CELEBRATE_DURATION) {
+      setMode(Mode::BREAK_TIME);
+    } else if (mode == Mode::BREAK_TIME && modeElapsed >= BREAK_DURATION) {
+      setMode(Mode::FOCUS);
+    }
+  }
+
+  if (now - lastDraw >= 150UL) {
+    lastDraw = now;
+    drawScreen();
+  }
+}
